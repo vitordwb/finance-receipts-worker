@@ -332,9 +332,12 @@ Manual text, if present:
 ${manualText || '(none)'}
 
 Rules:
+- Analyse the photo as an OCR.
 - Return data matching the provided JSON schema.
-- Extract the final total amount paid (合計).
-- Avoid getting the amout related to お釣り.
+- Extract ONLY the final total amount charged (合計).
+- NEVER get the amout related to お釣り.
+- IGNORE the amount next to お釣り or whatever value that is not next to 合計.
+- The total amount (合計) NEVER must be higher than the amount paid (お釣り).
 - Amount must be numeric only: no currency symbols and no commas.
 - For Japanese receipts, prefer total labels such as 合計, お買上計, 現計, お支払金額, 領収金額.
 - Ignore subtotal, tax-only values, points, cashback, change, and cash tendered.
@@ -366,7 +369,7 @@ Rules:
   }
 
   const payload = {
-    model: env.OPENAI_MODEL || 'gpt-4.1-mini',
+    model: env.OPENAI_MODEL || 'gpt-4o',
     input: [
       {
         role: 'user',
@@ -441,7 +444,7 @@ function expenseSchema() {
       },
       amount: {
         type: ['number', 'null'],
-        description: 'Final total amount paid. Numeric only.'
+        description: 'Total purchase cost charged by the merchant (合計). Numeric only. Use the sale total after discounts/coupons and tax. Do not use cash tendered, amount received, change, points, cashback, or payment/tender amounts.'
       },
       category: {
         type: 'string',
