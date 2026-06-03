@@ -333,7 +333,8 @@ ${manualText || '(none)'}
 
 Rules:
 - Return data matching the provided JSON schema.
-- Extract the final total amount paid.
+- Extract the final total amount paid (合計).
+- Avoid getting the amout related to お釣り.
 - Amount must be numeric only: no currency symbols and no commas.
 - For Japanese receipts, prefer total labels such as 合計, お買上計, 現計, お支払金額, 領収金額.
 - Ignore subtotal, tax-only values, points, cashback, change, and cash tendered.
