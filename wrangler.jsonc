@@ -20,7 +20,7 @@
 	"r2_buckets": [
 		{
 			"bucket_name": "finance-receipts",
-			"binding": "finance_receipts"
+			"binding": "RECEIPTS_BUCKET"
 		}
 	]
 	/**
