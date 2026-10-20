@@ -165,3 +165,6 @@ dist
 .env*
 !.env.example
 .wrangler/
+
+/receipts_samples
+.DS_Store
