@@ -156,5 +156,62 @@ describe("finance receipts worker", () => {
     expect(body.image_size).toBe(5);
     expect(env.RECEIPTS_BUCKET.put).toHaveBeenCalledTimes(1);
     expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+
+    const openAiCall = globalThis.fetch.mock.calls.find(([url]) => {
+      return url === "https://api.openai.com/v1/responses";
+    });
+    const openAiPayload = JSON.parse(openAiCall[1].body);
+    const prompt = openAiPayload.input[0].content.find(part => {
+      return part.type === "input_text";
+    }).text;
+
+    expect(prompt).toContain("お釣り");
+    expect(prompt).toContain("お預り");
+    expect(prompt).toContain("合計 ¥1,149");
+    expect(prompt).toContain("amount must be 1149");
+    expect(prompt).toContain("The value 8851 is change");
+    expect(prompt).toContain("合計 ¥2,533");
+    expect(prompt).toContain("amount must be 2533");
+    expect(prompt).toContain("The value 3033 is cash tendered");
+  });
+
+  it("corrects cash tendered when change returned is present", async () => {
+    const env = testEnv();
+
+    stubExternalRequests(env, {
+      date: "2026-06-02",
+      merchant: "SEIYU",
+      amount: 3033,
+      amount_label: "お預り",
+      cash_tendered: 3033,
+      change_returned: 500,
+      category: "Groceries",
+      confidence: 0.7
+    });
+
+    const response = await fetchWorker(
+      new Request("http://example.com/expense", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${env.SHORTCUT_TOKEN}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          text: "SEIYU receipt: 合計 2533 お預り 3033 お釣り 500",
+          client_datetime: "2026-06-02T19:32:00+09:00"
+        })
+      }),
+      env
+    );
+
+    const body = await response.json();
+    const sheetCall = globalThis.fetch.mock.calls.find(([url]) => {
+      return url === env.GOOGLE_SCRIPT_URL;
+    });
+    const sheetPayload = JSON.parse(sheetCall[1].body);
+
+    expect(response.status).toBe(200);
+    expect(body.expense.amount).toBe(2533);
+    expect(sheetPayload.amount).toBe(2533);
   });
 });

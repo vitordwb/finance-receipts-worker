@@ -57,6 +57,10 @@ export default {
 				}, 404);
       }
 
+			if (request.method === 'DELETE') {
+				return await deleteLastExpense();
+			}
+
       return await handleExpense(request, env);
 
     } catch (err) {
@@ -323,7 +327,7 @@ async function extractExpense({
   clientDate
 }) {
   const prompt = `
-You extract exactly one personal expense for a Google Sheets budget table.
+You extract exactly one personal expense from a receipt image, usually a Japanese POS receipt.
 
 Client datetime from the user's iPhone:
 ${clientDatetime || clientDate}
@@ -332,16 +336,22 @@ Manual text, if present:
 ${manualText || '(none)'}
 
 Rules:
-- Analyse the photo as an OCR.
+- Analyse the photo as OCR. If the receipt is rotated or skewed, mentally rotate it before reading.
 - Return data matching the provided JSON schema.
-- Extract ONLY the final total amount charged (合計).
-- NEVER get the amout related to お釣り.
-- IGNORE the amount next to お釣り or whatever value that is not next to 合計.
-- The total amount (合計) NEVER must be higher than the amount paid (お釣り).
 - Amount must be numeric only: no currency symbols and no commas.
-- For Japanese receipts, prefer total labels such as 合計, お買上計, 現計, お支払金額, 領収金額.
-- Ignore subtotal, tax-only values, points, cashback, change, and cash tendered.
-- If the receipt has several values, choose the actual paid total.
+
+Total amount extraction:
+- Extract ONLY the final total amount charged to the customer.
+- Highest priority labels for the expense amount: 合計, お買上計, 現計, お支払金額, 領収金額, 税込合計.
+- Match each amount to the Japanese label on the same row. Do not use the amount from the row above or below the total label.
+- NEVER use amounts next to お預り, お預かり, 預り, 預かり, 現金預り. These are cash tendered to the cashier, not the expense.
+- NEVER use amounts next to お釣り, おつり, 釣銭, つり銭, 返金, change. These are change returned to the customer, not the expense.
+- Ignore subtotal, tax-only values, points, cashback, discounts, item counts, barcode numbers, receipt numbers, store numbers, telephone numbers, cash tendered, and change.
+- If the receipt shows cash tendered and change, validate the total with: cash tendered minus change equals total charged. Return the total charged, not the cash tendered.
+- Example: 合計 ¥1,149, お預り ¥10,000, お釣り ¥8,851 means amount must be 1149. The value 8851 is change and must never be returned.
+- Example: 合計 ¥2,533, お預り ¥3,033, お釣り ¥500 means amount must be 2533. The value 3033 is cash tendered and must never be returned.
+- If several large numbers appear, choose the one attached to the total label, not the most visually prominent amount.
+- Also return amount_label with the label used for amount, cash_tendered from お預り/お預かり if present, and change_returned from お釣り if present.
 - If the date is missing, use the client date: ${clientDate}.
 - If the manual text says "ontem", "yesterday", "hoje", or "today", resolve it relative to the client date.
 - Merchant is the store/vendor name. If unknown, use "Unknown".
@@ -422,6 +432,17 @@ Rules:
   }
 }
 
+async function deleteLastExpense(env) {
+  requireEnv(env, [
+    'SHORTCUT_TOKEN',
+    'GOOGLE_SCRIPT_URL',
+    'GOOGLE_SCRIPT_SECRET'
+  ]);
+
+	console.log('Not implemented yet');
+}
+
+
 function expenseSchema() {
   return {
     type: 'object',
@@ -430,6 +451,9 @@ function expenseSchema() {
       'date',
       'merchant',
       'amount',
+      'amount_label',
+      'cash_tendered',
+      'change_returned',
       'category',
       'confidence'
     ],
@@ -445,6 +469,18 @@ function expenseSchema() {
       amount: {
         type: ['number', 'null'],
         description: 'Total purchase cost charged by the merchant (合計). Numeric only. Use the sale total after discounts/coupons and tax. Do not use cash tendered, amount received, change, points, cashback, or payment/tender amounts.'
+      },
+      amount_label: {
+        type: 'string',
+        description: 'Receipt label used for amount, for example 合計.'
+      },
+      cash_tendered: {
+        type: ['number', 'null'],
+        description: 'Cash tendered/received amount from labels like お預り, if present. Never use as expense amount.'
+      },
+      change_returned: {
+        type: ['number', 'null'],
+        description: 'Change returned amount from labels like お釣り, if present. Never use as expense amount.'
       },
       category: {
         type: 'string',
@@ -468,6 +504,15 @@ function normalizeAndValidateExpense(expense, clientDate) {
   }
 
   expense.amount = Number(expense.amount);
+  expense.amount_label = cleanText(expense.amount_label || '', 40);
+  expense.cash_tendered = optionalNumber(expense.cash_tendered);
+  expense.change_returned = optionalNumber(expense.change_returned);
+
+  const correctedAmount = amountFromCashAndChange(expense);
+
+  if (correctedAmount !== null) {
+    expense.amount = correctedAmount;
+  }
 
   if (!Number.isFinite(expense.amount) || expense.amount <= 0) {
     throw new Error('Valor total inválido.');
@@ -484,6 +529,47 @@ function normalizeAndValidateExpense(expense, clientDate) {
   }
 
   expense.confidence = Number(expense.confidence || 0);
+}
+
+function optionalNumber(value) {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+
+  const number = Number(value);
+
+  return Number.isFinite(number) ? number : null;
+}
+
+function amountFromCashAndChange(expense) {
+  const cashTendered = expense.cash_tendered;
+  const changeReturned = expense.change_returned;
+
+  if (cashTendered === null || changeReturned === null || cashTendered <= changeReturned) {
+    return null;
+  }
+
+  const total = Math.round((cashTendered - changeReturned) * 100) / 100;
+
+  if (total <= 0) {
+    return null;
+  }
+
+  const label = String(expense.amount_label || '').toLowerCase();
+
+  if (
+    approximatelyEqual(expense.amount, cashTendered) ||
+    approximatelyEqual(expense.amount, changeReturned) ||
+    /お預|預|釣|change|cash/.test(label)
+  ) {
+    return total;
+  }
+
+  return null;
+}
+
+function approximatelyEqual(left, right) {
+  return Number.isFinite(left) && Number.isFinite(right) && Math.abs(left - right) < 0.01;
 }
 
 function extractOutputText(responseJson) {
