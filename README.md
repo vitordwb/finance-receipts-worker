@@ -60,6 +60,8 @@ npm test -- --run
 | `OPENAI_MODEL` | Optional | Model name; defaults to `gpt-4o` in both configuration and source. |
 | `RECEIPTS_BUCKET` | Photo upload and public retrieval | R2 binding, configured to use bucket `finance-receipts`. |
 
+Local development and production use the same `OPENAI_MODEL` value from `wrangler.jsonc` (`gpt-4o`). Do not define `OPENAI_MODEL` in `.env` or `.dev.vars`, since local values override that shared configuration. Structured extraction requires JSON Schema Structured Outputs support; the older `gpt-4o-2024-05-13` snapshot is incompatible. Restart development after changing local environment variables.
+
 Example **local** `.dev.vars` contents; replace every placeholder with your own value:
 
 ```dotenv
@@ -166,7 +168,11 @@ Successful responses contain `ok`, `message`, `expense`, `sheet`, `image_key`, `
 
 Payment is inferred by the AI, not a client-supplied payment field. Missing or unclear evidence stays blank; it never defaults to cash. Explicit debit cards, electronic money, QR payments, and mixed payments also stay blank because they are outside the two supported methods. Several sample receipts say `DEBIT MASTERCARD` alongside a generic credit label; the explicit debit indication takes precedence.
 
+Cash settlement labels `現計` and `現金合計` are explicit evidence for `CASH`, including exact-payment receipts showing zero change. Zero change by itself does not identify the payment method.
+
 Photo summaries translate readable purchased items into English, grouping similar items without inventing unreadable products. Service receipts summarize the paid service (for example, a pension contribution). Unreadable items are reported as `Items unreadable`. English output is instructed through the AI prompt; it has not been evaluated through paid model calls against the sample images.
+
+Extraction rules distinguish transaction/payment dates from promotional dates, deadlines, and contribution periods, and convert explicitly marked Reiwa dates to Gregorian dates. They recognize Japanese and English total/tender labels, avoid double-counting attached card slips, and distinguish Valor supermarkets from home centers. National pension slips use the identified service provider and `Pension` category; general retailers are categorized by readable purchased goods. These rules were reviewed visually against all 11 local sample receipts, not benchmarked through live model calls.
 
 ### Public receipt links
 

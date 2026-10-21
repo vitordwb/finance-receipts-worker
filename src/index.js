@@ -380,7 +380,7 @@ Rules:
 
 Total amount extraction:
 - Extract ONLY the final total amount charged to the customer.
-- Highest priority labels for the expense amount: 合計, お買上計, 現計, お支払金額, 領収金額, 税込合計.
+- Highest priority labels for the expense amount: 合計, 合計額, 総合計, お買上計, 現計, 現金合計, お支払金額, 領収金額, 税込合計, Total, Grand Total.
 - Match each amount to the Japanese label on the same row. Do not use the amount from the row above or below the total label.
 - NEVER use amounts next to お預り, お預かり, 預り, 預かり, 現金預り. These are cash tendered to the cashier, not the expense.
 - NEVER use amounts next to お釣り, おつり, 釣銭, つり銭, 返金, change. These are change returned to the customer, not the expense.
@@ -389,28 +389,40 @@ Total amount extraction:
 - Example: 合計 ¥1,149, お預り ¥10,000, お釣り ¥8,851 means amount must be 1149. The value 8851 is change and must never be returned.
 - Example: 合計 ¥2,533, お預り ¥3,033, お釣り ¥500 means amount must be 2533. The value 3033 is cash tendered and must never be returned.
 - If several large numbers appear, choose the one attached to the total label, not the most visually prominent amount.
-- Also return amount_label with the label used for amount, cash_tendered from お預り/お預かり if present, and change_returned from お釣り if present.
-- If the date is missing, use the client date: ${clientDate}.
+- An attached card slip or repeated total describes the same purchase; do not add it to the sale total.
+- Also return amount_label with the label used for amount, cash_tendered from explicit tendered/received labels (お預り/お預かり, Cash Received, or Received in a cash transaction), and change_returned from お釣り/Change. Use null for absent or unreadable tender/change values; preserve a printed zero.
+- A plain 現金/Cash payment or 現金合計 row can establish cash payment but is not necessarily cash tendered. Never populate cash_tendered from a card-payment amount.
+
+Expense date:
+- Use the actual transaction/payment date, including a 領収日/収納日 or receipt stamp on a service-payment slip, and return YYYY-MM-DD.
+- Do not use promotional dates, payment deadlines, billing/contribution periods, fiscal years, or card expiry dates.
+- Convert explicitly marked Japanese era dates to Gregorian dates (令和/Reiwa year + 2018); do not assume an unmarked two-digit year is an era year.
+- If the transaction/payment date is missing or unreadable, use the client date: ${clientDate}.
 - If the manual text says "ontem", "yesterday", "hoje", or "today", resolve it relative to the client date.
-- Merchant is the store/vendor name. If unknown, use "Unknown".
+
+Merchant and category:
+- Merchant is the store/vendor name. For service-payment slips, use the identified service provider rather than a collection bank or payment intermediary. If unknown, use "Unknown".
 - Category must be exactly one of the allowed enum values.
-- Supermarket or grocery shopping should usually be "Groceries".
-- Valor ホームセンタ goes into "Home maintenance".
+- For general retailers and resale shops, use the readable purchased goods to choose the category, such as clothing into "Clothing". If mixed goods have no clear supported category, use "Other".
+- Supermarket or grocery shopping should usually be "Groceries", including Valor supermarket receipts.
+- Use "Home maintenance" for Valor ホームセンタ, not the Valor brand alone.
+- National pension contributions (国民年金) go into "Pension".
 - Cafe/restaurant meals should usually be "Restaurant".
 - Train, metro, bus, taxi, transit should usually be "Public transportation".
 - If category is unclear, use "Other".
 
 Payment method:
 - Infer payment_method only from explicit payment evidence in the receipt or manual text.
-- Use CREDIT_CARD for explicitly identified credit-card payment (クレジット, credit card).
-- Use CASH for explicitly identified cash payment (現金, cash), or a cash-tendered/change transaction.
+- Use CREDIT_CARD for explicitly identified credit-card payment (クレジット, credit card), unless a more specific debit or unsupported payment designation is present.
+- Use CASH for explicitly identified cash payment (現金, cash), cash settlement labels 現計 or 現金合計, or a cash-tendered/change transaction. A 現計/現金合計 payment row establishes cash even when the customer paid the exact amount and お釣り/Change is zero.
 - A card logo, card number, or a zero change line alone does not establish a credit-card payment.
-- If explicitly marked DEBIT (including DEBIT MASTERCARD), electronic money, QR payment, mixed payment, missing, or unclear, return an empty string. Never guess CASH or CREDIT_CARD.
+- An explicit DEBIT designation (including DEBIT MASTERCARD) overrides generic クレジット/credit headings and VISA/MasterCard branding: return an empty string.
+- For electronic money, QR payment, mixed payment, missing, or unclear payment evidence, return an empty string. Never guess CASH or CREDIT_CARD.
 
 Receipt item summary:
 - A receipt photo is ${imageBase64 ? 'present' : 'absent'}.
 - For a photo, summarize the purchased items or paid service concisely in English in notes, at most 1000 characters.
-- Translate Japanese item names into English, group similar items, and include quantities only when legible.
+- Translate Japanese item names into English, group similar items, and include quantities only when legible. Use a readable generic product type rather than guessing an abbreviated name; discount rows are not purchased items.
 - Include only readable purchase information, not card numbers, personal details, totals, tax, change, advertising, or invented products.
 - A pension or other service-payment receipt should name the service rather than inventing shopping items.
 - If items are unreadable, use "Items unreadable". For text-only expenses always return an empty notes string.
