@@ -1,4 +1,4 @@
-# Finance Receipts Worker
+# Finance Receipts Worker Backend for IOS Shorcut Automation
 
 ## Purpose
 
