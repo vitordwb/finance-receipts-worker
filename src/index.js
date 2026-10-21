@@ -50,6 +50,10 @@ export default {
 				});
       }
 
+      if (request.method === 'GET' && url.pathname.startsWith('/receipts/')) {
+        return await serveReceipt(url, env);
+      }
+
       if (request.method !== 'POST' || url.pathname !== '/expense') {
         return json({
 					ok: false,
@@ -73,6 +77,29 @@ export default {
     }
   }
 };
+
+async function serveReceipt(url, env) {
+  const key = url.pathname.slice(1);
+  if (!/^receipts\/\d{4}-\d{2}-\d{2}\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(jpg|png|webp|gif)$/.test(key)) {
+    return json({ ok: false, error: 'not_found' }, 404);
+  }
+
+  const object = await env.RECEIPTS_BUCKET.get(key);
+  if (!object) {
+    return json({ ok: false, error: 'not_found' }, 404);
+  }
+
+  const extension = key.slice(key.lastIndexOf('.') + 1);
+  const headers = new Headers({
+    'Content-Type': extension === 'jpg' ? 'image/jpeg' : `image/${extension}`,
+    'Content-Disposition': 'inline',
+    'Cache-Control': 'no-store',
+    'X-Content-Type-Options': 'nosniff',
+    'Referrer-Policy': 'no-referrer',
+    'X-Robots-Tag': 'noindex, nofollow'
+  });
+  return new Response(object.body, { headers });
+}
 
 async function handleExpense(request, env) {
   requireEnv(env, [
@@ -189,6 +216,13 @@ async function handleExpense(request, env) {
   });
 
   normalizeAndValidateExpense(expense, clientDate);
+  expense.payment_method = ['CREDIT_CARD', 'CASH'].includes(expense.payment_method)
+    ? expense.payment_method
+    : '';
+  expense.notes = imageBase64 && typeof expense.notes === 'string'
+    ? cleanText(expense.notes, 1000)
+    : '';
+  const imageUrl = imageKey ? new URL(`/${imageKey}`, request.url).href : '';
 
   const sheetPayload = {
     secret: env.GOOGLE_SCRIPT_SECRET,
@@ -196,6 +230,9 @@ async function handleExpense(request, env) {
     merchant: expense.merchant,
     amount: expense.amount,
     category: expense.category,
+    payment_method: expense.payment_method,
+    notes: expense.notes,
+    image_url: imageUrl,
     image_key: imageKey,
     source: imageKey ? 'ios_shortcut_photo_base64' : 'ios_shortcut_text',
     confidence: expense.confidence
@@ -232,6 +269,7 @@ async function handleExpense(request, env) {
     expense,
     sheet: sheetJson,
     image_key: imageKey,
+    image_url: imageUrl,
     image_size: imageSize
   });
 }
@@ -361,6 +399,21 @@ Total amount extraction:
 - Cafe/restaurant meals should usually be "Restaurant".
 - Train, metro, bus, taxi, transit should usually be "Public transportation".
 - If category is unclear, use "Other".
+
+Payment method:
+- Infer payment_method only from explicit payment evidence in the receipt or manual text.
+- Use CREDIT_CARD for explicitly identified credit-card payment (クレジット, credit card).
+- Use CASH for explicitly identified cash payment (現金, cash), or a cash-tendered/change transaction.
+- A card logo, card number, or a zero change line alone does not establish a credit-card payment.
+- If explicitly marked DEBIT (including DEBIT MASTERCARD), electronic money, QR payment, mixed payment, missing, or unclear, return an empty string. Never guess CASH or CREDIT_CARD.
+
+Receipt item summary:
+- A receipt photo is ${imageBase64 ? 'present' : 'absent'}.
+- For a photo, summarize the purchased items or paid service concisely in English in notes, at most 1000 characters.
+- Translate Japanese item names into English, group similar items, and include quantities only when legible.
+- Include only readable purchase information, not card numbers, personal details, totals, tax, change, advertising, or invented products.
+- A pension or other service-payment receipt should name the service rather than inventing shopping items.
+- If items are unreadable, use "Items unreadable". For text-only expenses always return an empty notes string.
 `;
 
   const content = [
@@ -455,7 +508,9 @@ function expenseSchema() {
       'cash_tendered',
       'change_returned',
       'category',
-      'confidence'
+      'confidence',
+      'payment_method',
+      'notes'
     ],
     properties: {
       date: {
@@ -485,6 +540,15 @@ function expenseSchema() {
       category: {
         type: 'string',
         enum: CATEGORIES
+      },
+      payment_method: {
+        type: 'string',
+        enum: ['CREDIT_CARD', 'CASH', ''],
+        description: 'Evidence-based payment method; empty if unknown or a different payment type.'
+      },
+      notes: {
+        type: 'string',
+        description: 'Concise English summary of purchased items or service from the photo; empty for text-only input.'
       },
       confidence: {
         type: 'number',

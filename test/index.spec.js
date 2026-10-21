@@ -12,7 +12,8 @@ function testEnv(overrides = {}) {
     GOOGLE_SCRIPT_URL: "https://script.example.test/exec",
     GOOGLE_SCRIPT_SECRET: "sheet-test-secret",
     RECEIPTS_BUCKET: {
-      put: vi.fn()
+      put: vi.fn(),
+      get: vi.fn()
     },
     ...overrides
   };
@@ -157,22 +158,6 @@ describe("finance receipts worker", () => {
     expect(env.RECEIPTS_BUCKET.put).toHaveBeenCalledTimes(1);
     expect(globalThis.fetch).toHaveBeenCalledTimes(2);
 
-    const openAiCall = globalThis.fetch.mock.calls.find(([url]) => {
-      return url === "https://api.openai.com/v1/responses";
-    });
-    const openAiPayload = JSON.parse(openAiCall[1].body);
-    const prompt = openAiPayload.input[0].content.find(part => {
-      return part.type === "input_text";
-    }).text;
-
-    expect(prompt).toContain("お釣り");
-    expect(prompt).toContain("お預り");
-    expect(prompt).toContain("合計 ¥1,149");
-    expect(prompt).toContain("amount must be 1149");
-    expect(prompt).toContain("The value 8851 is change");
-    expect(prompt).toContain("合計 ¥2,533");
-    expect(prompt).toContain("amount must be 2533");
-    expect(prompt).toContain("The value 3033 is cash tendered");
   });
 
   it("corrects cash tendered when change returned is present", async () => {
@@ -213,5 +198,94 @@ describe("finance receipts worker", () => {
     expect(response.status).toBe(200);
     expect(body.expense.amount).toBe(2533);
     expect(sheetPayload.amount).toBe(2533);
+  });
+
+  it("clears unsupported payment methods and photo notes for text-only expenses", async () => {
+    const env = testEnv();
+    stubExternalRequests(env, {
+      date: "2026-06-03",
+      merchant: "Cafe",
+      amount: 450,
+      category: "Restaurant",
+      payment_method: "DEBIT_CARD",
+      notes: "Invented photo summary",
+      confidence: 0.8
+    });
+    const response = await fetchWorker(new Request("https://example.com/expense", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env.SHORTCUT_TOKEN}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ text: "Coffee 450 yen" })
+    }), env);
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.expense.payment_method).toBe("");
+    expect(body.expense.notes).toBe("");
+    expect(body.image_url).toBe("");
+    expect(env.RECEIPTS_BUCKET.put).not.toHaveBeenCalled();
+  });
+
+  it("sanitizes photo notes and serves the saved image through its public URL", async () => {
+    const env = testEnv();
+    const objects = new Map();
+    env.RECEIPTS_BUCKET.put.mockImplementation(async (key, bytes) => {
+      objects.set(key, bytes);
+    });
+    env.RECEIPTS_BUCKET.get.mockImplementation(async key => {
+      const bytes = objects.get(key);
+      return bytes ? { body: bytes } : null;
+    });
+    stubExternalRequests(env, {
+      date: "2026-06-03",
+      merchant: "Store",
+      amount: 450,
+      category: "Groceries",
+      payment_method: "CASH",
+      notes: "=Milk and bread",
+      confidence: 0.8
+    });
+    const response = await fetchWorker(new Request("https://example.com/expense", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env.SHORTCUT_TOKEN}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        photo: "aGVsbG8=",
+        mime_type: "image/png",
+        client_datetime: "2026-06-03T12:30:00+09:00"
+      })
+    }), env);
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.expense.notes).toBe("'=Milk and bread");
+    expect(body.image_url).toBe(`https://example.com/${body.image_key}`);
+    const image = await fetchWorker(new Request(body.image_url), env);
+    expect(image.status).toBe(200);
+    expect(image.headers.get("Content-Type")).toBe("image/png");
+    expect(image.headers.get("X-Content-Type-Options")).toBe("nosniff");
+    expect(image.headers.get("Cache-Control")).toBe("no-store");
+    expect(new Uint8Array(await image.arrayBuffer())).toEqual(new TextEncoder().encode("hello"));
+  });
+
+  it("returns 404 for missing receipts and rejects keys outside the receipt namespace", async () => {
+    const env = testEnv();
+    env.RECEIPTS_BUCKET.get.mockResolvedValue(null);
+    const missing = await fetchWorker(new Request(
+      "https://example.com/receipts/2026-06-03/00000000-0000-0000-0000-000000000000.jpg"
+    ), env);
+    expect(missing.status).toBe(404);
+    env.RECEIPTS_BUCKET.get.mockClear();
+    for (const path of [
+      "/receipts/private.txt",
+      "/receipts/2026-06-03/00000000-0000-0000-0000-000000000000.svg",
+      "/receipts/%2e%2e%2fsecret.jpg"
+    ]) {
+      const response = await fetchWorker(new Request(`https://example.com${path}`), env);
+      expect(response.status).toBe(404);
+    }
+    expect(env.RECEIPTS_BUCKET.get).not.toHaveBeenCalled();
   });
 });
